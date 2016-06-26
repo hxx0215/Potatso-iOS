@@ -27,8 +27,8 @@ public enum VPNStatus {
 }
 
 
-public let kDefaultGroupIdentifier = "defaultGroup"
-public let kDefaultGroupName = "defaultGroupName"
+public let kDefaultGroupIdentifier = "group.com.hxx.potatso"
+public let kDefaultGroupName = "group com hxx potatso"
 private let statusIdentifier = "status"
 public let kProxyServiceVPNStatusNotification = "kProxyServiceVPNStatusNotification"
 

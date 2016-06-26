@@ -177,15 +177,15 @@ extension Rule {
     
 }
 
-extension Rule: CustomStringConvertible {
-   
-    public override var description: String {
-        return "\(type), \(value), \(action)"
-    }
-    
-}
-
-extension Rule: Equatable {}
+//extension Rule: CustomStringConvertible {
+//   
+//    public override var description: String {
+//        return "\(type), \(value), \(action)"
+//    }
+//    
+//}
+//
+//extension Rule: Equatable {}
 
 public func ==(lhs: Rule, rhs: Rule) -> Bool {
     return lhs.uuid == rhs.uuid

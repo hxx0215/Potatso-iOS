@@ -8,7 +8,7 @@
 
 #import "Potatso.h"
 
-NSString *sharedGroupIdentifier = @"group.com.touchingapp.potatso";
+NSString *sharedGroupIdentifier = @"group.com.hxx.potatso";
 
 @implementation Potatso
 

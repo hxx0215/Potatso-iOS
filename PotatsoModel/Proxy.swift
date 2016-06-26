@@ -200,15 +200,15 @@ extension Proxy {
     
 }
 
-extension Proxy: CustomStringConvertible {
-    
-    public override var description: String {
-        return name
-    }
-    
-}
-
-extension Proxy: Equatable {}
+//extension Proxy: CustomStringConvertible {
+//    
+//    public override var description: String {
+//        return name
+//    }
+//    
+//}
+//
+//extension Proxy: Equatable {}
 
 public func ==(lhs: Proxy, rhs: Proxy) -> Bool {
     return lhs.uuid == rhs.uuid
