@@ -73,6 +73,10 @@
                 d[[NSString stringWithFormat:@"time%d", i]] = @(client->timestamp[i]);
             }
             d[@"version"] = @(client->http->ver);
+            if (client->rule && client->rule->rule) {
+                d[@"rule"] = [NSString stringWithCString:client->rule->rule encoding:NSUTF8StringEncoding];
+            }
+            d[@"global"] = @(global_mode);
 //            if (p->headers) {
 //                d[@"headers"] = [NSString stringWithCString:p->headers->string encoding:NSUTF8StringEncoding];
 //            }
@@ -107,32 +111,38 @@
     __block NSError *proxyError;
     dispatch_group_t g = dispatch_group_create();
     dispatch_group_enter(g);
+    NSLog(@"starting shadowsocks....");
     [[ProxyManager sharedManager] startShadowsocks:^(int port, NSError *error) {
         proxyError = error;
         dispatch_group_leave(g);
     }];
     dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
     if (proxyError) {
+        NSLog(@"shadowsocks error: %@", [proxyError localizedDescription]);
         exit(1);
         return;
     }
     dispatch_group_enter(g);
+    NSLog(@"starting http proxy....");
     [[ProxyManager sharedManager] startHttpProxy:^(int port, NSError *error) {
         proxyError = error;
         dispatch_group_leave(g);
     }];
     dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
     if (proxyError) {
+        NSLog(@"http proxy error: %@", [proxyError localizedDescription]);
         exit(1);
         return;
     }
     dispatch_group_enter(g);
+    NSLog(@"starting socks proxy....");
     [[ProxyManager sharedManager] startSocksProxy:^(int port, NSError *error) {
         proxyError = error;
         dispatch_group_leave(g);
     }];
     dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
     if (proxyError) {
+        NSLog(@"socks proxy error: %@", [proxyError localizedDescription]);
         exit(1);
         return;
     }
@@ -170,9 +180,6 @@
         NSLog(@"system dns servers: %@", dnsServers);
     }
     NSMutableArray *excludedRoutes = [NSMutableArray array];
-    for (NSString *server in dnsServers) {
-        [excludedRoutes addObject:[[NEIPv4Route alloc] initWithDestinationAddress:[server stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] subnetMask:@"255.255.255.255"]];
-    }
     [excludedRoutes addObject:[[NEIPv4Route alloc] initWithDestinationAddress:@"192.168.0.0" subnetMask:@"255.255.0.0"]];
     [excludedRoutes addObject:[[NEIPv4Route alloc] initWithDestinationAddress:@"10.0.0.0" subnetMask:@"255.0.0.0"]];
     [excludedRoutes addObject:[[NEIPv4Route alloc] initWithDestinationAddress:@"172.16.0.0" subnetMask:@"255.240.0.0"]];
@@ -191,7 +198,9 @@
     proxySettings.HTTPSServer = [[NEProxyServer alloc] initWithAddress:proxyServerName port:proxyServerPort];
     proxySettings.excludeSimpleHostnames = YES;
     settings.proxySettings = proxySettings;
-    settings.DNSSettings = [[NEDNSSettings alloc] initWithServers:dnsServers];
+    NEDNSSettings *dnsSettings = [[NEDNSSettings alloc] initWithServers:dnsServers];
+    dnsSettings.matchDomains = @[@""];
+    settings.DNSSettings = dnsSettings;
     [self setTunnelNetworkSettings:settings completionHandler:^(NSError * _Nullable error) {
         if (error) {
             if (completionHandler) {

@@ -59,6 +59,11 @@ const char actions_rcs[] = "$Id: actions.c,v 1.95 2016/01/16 12:33:35 fabiankeil
 
 const char actions_h_rcs[] = ACTIONS_H_VERSION;
 
+struct url_actions *po_url_rules = NULL;
+struct url_actions *po_url_rules_tail = NULL;
+
+struct url_actions *po_ip_rules = NULL;
+struct url_actions *po_ip_rules_tail = NULL;
 
 /*
  * We need the main list of options.
@@ -1156,6 +1161,22 @@ static int action_spec_is_valid(struct client_state *csp, const struct action_sp
 
 }
 
+static void separatePattern(const char *buf, char *pattern, char *rule) {
+    pattern = buf;
+    rule = "";
+    char *token;
+    int i = 0;
+    while ((token = strsep(&buf, "@@")) != NULL)
+    {
+        if (i==0) {
+            pattern = strdup(token);
+        }else if (i == 2){
+            rule = strdup(token);
+        }
+        i++;
+    }
+}
+
 
 /*********************************************************************
  *
@@ -1559,7 +1580,6 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
 
          perm->action = cur_action;
          cur_action_used = 1;
-
           if (cur_action->add & ACTION_FORWARD_RESOLVED_IP) {
               if (!perm->tree) {
                   radix_tree_t *tree;
@@ -1573,6 +1593,7 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
                   }
                   perm->tree = tree;
               }
+
               if (strlen(buf) <= 4) {
                   // country
                   FILE *geo_fp;
@@ -1633,10 +1654,27 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
                 return 1; /* never get here */
              }
           }
-
-         /* add it to the list */
-         last_perm->next = perm;
-         last_perm = perm;
+          if (cur_action->add & ACTION_FORWARD_RULE) {
+              if (po_url_rules_tail) {
+                  po_url_rules_tail->next = perm;
+                  po_url_rules_tail = perm;
+              }else {
+                  po_url_rules = perm;
+                  po_url_rules_tail = po_url_rules;
+              }
+          }if (cur_action->add & ACTION_FORWARD_RESOLVED_IP) {
+              if (po_ip_rules_tail) {
+                  po_ip_rules_tail->next = perm;
+                  po_ip_rules_tail = perm;
+              }else {
+                  po_ip_rules = perm;
+                  po_ip_rules_tail = po_ip_rules;
+              }
+          }else {
+             /* add it to the list */
+             last_perm->next = perm;
+             last_perm = perm;
+          }
       }
       else if (mode == MODE_START_OF_FILE)
       {

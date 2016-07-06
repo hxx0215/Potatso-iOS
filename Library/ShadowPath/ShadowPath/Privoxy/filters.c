@@ -41,6 +41,8 @@ const char filters_rcs[] = "$Id: filters.c,v 1.199 2016/01/16 12:33:35 fabiankei
 #include <ctype.h>
 #include <string.h>
 #include <assert.h>
+#include <inttypes.h>
+#include <sys/errno.h>
 
 #ifndef _WIN32
 #ifndef __OS2__
@@ -81,6 +83,8 @@ typedef char *(*filter_function_ptr)();
 static filter_function_ptr get_filter_function(const struct client_state *csp);
 static jb_err remove_chunked_transfer_coding(char *buffer, size_t *size);
 static jb_err prepare_for_filtering(struct client_state *csp);
+
+struct forward_spec fwd_default[1];
 
 #ifdef FEATURE_ACL
 
@@ -2380,38 +2384,10 @@ void get_url_actions(struct client_state *csp, struct http_request *http)
          return;
       }
 
-      apply_url_actions(csp->action, http, b);
+       apply_url_actions(csp->action, csp, b);
    }
 
    return;
-}
-
-
-void get_ip_actions(struct client_state *csp, struct sockaddr_storage addr)
-{
-    struct file_list *fl;
-    struct url_actions *b;
-    int i;
-
-//    init_current_action(csp->action);
-
-    for (i = 0; i < MAX_AF_FILES; i++)
-    {
-        if (((fl = csp->actions_list[i]) == NULL) || ((b = fl->f) == NULL))
-        {
-            return;
-        }
-
-        if (apply_ip_actions(csp->action, addr, b) > 0) {
-            break;
-        }
-    }
-
-    if (csp->action->flags & ACTION_FORWARD_RESOLVED_IP) {
-        csp->fwd_ip = get_forward_ip_settings(csp);
-    }
-    
-    return;
 }
 
 
@@ -2429,45 +2405,25 @@ void get_ip_actions(struct client_state *csp, struct sockaddr_storage addr)
  * Returns     :  N/A
  *
  *********************************************************************/
-void apply_url_actions(struct current_action_spec *action,
-                       struct http_request *http,
+int apply_url_actions(struct current_action_spec *action,
+                       struct client_state *csp,
                        struct url_actions *b)
 {
    if (b == NULL)
    {
       /* Should never happen */
-      return;
+      return 0;
    }
-
-   for (b = b->next; NULL != b; b = b->next)
-   {
-      if (url_match(b->url, http))
-      {
-         merge_current_action(action, b->action);
-      }
-   }
-}
-
-int apply_ip_actions(struct current_action_spec *action,
-                       struct sockaddr_storage addr,
-                       struct url_actions *b)
-{
-    if (b == NULL || addr.ss_family != AF_INET)
-    {
-        /* Should never happen */
-        return 0;
-    }
-
-    struct sockaddr_in *sin = (struct sockaddr_in *)&addr;
 
     for (b = b->next; NULL != b; b = b->next)
     {
-        if (radix32tree_find(b->tree, ntohl(sin->sin_addr.s_addr)) != RADIX_NO_VALUE) {
+        if (url_match(b->url, csp->http))
+        {
             merge_current_action(action, b->action);
-            return 1;
         }
     }
     return 0;
+
 }
 
 
@@ -2499,63 +2455,65 @@ int apply_ip_actions(struct current_action_spec *action,
  *********************************************************************/
 static struct forward_spec *get_forward_override_settings(struct client_state *csp)
 {
-   const char *forward_override_line = csp->action->string[ACTION_STRING_FORWARD_OVERRIDE];
-   char forward_settings[BUFFER_SIZE];
-   char *http_parent = NULL;
-   /* variable names were chosen for consistency reasons. */
-   struct forward_spec *fwd = NULL;
-   int vec_count;
-   char *vec[3];
+    const char *forward_override_line = csp->action->string[ACTION_STRING_FORWARD_OVERRIDE];
+    char forward_settings[BUFFER_SIZE];
+    char *http_parent = NULL;
+    /* variable names were chosen for consistency reasons. */
+    struct forward_spec *fwd = NULL;
+    int vec_count;
+    char *vec[3];
 
-   assert(csp->action->flags & ACTION_FORWARD_OVERRIDE);
-   /* Should be enforced by load_one_actions_file() */
-   assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
+    assert(csp->action->flags & ACTION_FORWARD_OVERRIDE);
+    /* Should be enforced by load_one_actions_file() */
+    assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
 
-   /* Create a copy ssplit can modify */
-   strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
+    /* Create a copy ssplit can modify */
+    strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
 
-   if (NULL != csp->fwd)
-   {
+    if (NULL != csp->fwd && csp->fwd->should_unload)
+    {
       /*
        * XXX: Currently necessary to prevent memory
        * leaks when the show-url-info cgi page is visited.
        */
       unload_forward_spec(csp->fwd);
-   }
+    }
 
-   /*
+    /*
     * allocate a new forward node, valid only for
     * the lifetime of this request. Save its location
     * in csp as well, so sweep() can free it later on.
     */
-   fwd = csp->fwd = zalloc(sizeof(*fwd));
-   if (NULL == fwd)
-   {
+    fwd = csp->fwd = zalloc(sizeof(*fwd));
+    if (NULL == fwd)
+    {
       log_error(LOG_LEVEL_FATAL,
          "can't allocate memory for forward-override{%s}", forward_override_line);
       /* Never get here - LOG_LEVEL_FATAL causes program exit */
       return NULL;
-   }
+    }
 
-   vec_count = ssplit(forward_settings, " \t", vec, SZ(vec));
-   if ((vec_count == 2) && !strcasecmp(vec[0], "forward"))
-   {
+    fwd->should_unload = 1;
+
+    vec_count = ssplit(forward_settings, " \t", vec, SZ(vec));
+    if ((vec_count == 2) && !strcasecmp(vec[0], "forward"))
+    {
       fwd->type = SOCKS_NONE;
 
       /* Parse the parent HTTP proxy host:port */
       http_parent = vec[1];
 
-   }
-   else if ((vec_count == 2) && !strcasecmp(vec[0], "forward-webserver"))
-   {
+    }
+    else if ((vec_count == 2) && !strcasecmp(vec[0], "forward-webserver"))
+    {
       fwd->type = FORWARD_WEBSERVER;
 
       /* Parse the parent HTTP server host:port */
       http_parent = vec[1];
 
-   }
-   else if (vec_count == 3)
-   {
+    }
+    else if (vec_count == 3)
+    {
       char *socks_proxy = NULL;
 
       if  (!strcasecmp(vec[0], "forward-socks4"))
@@ -2588,39 +2546,38 @@ static struct forward_spec *get_forward_override_settings(struct client_state *c
 
          http_parent = vec[2];
       }
-   }
+    }
 
-   if (NULL == http_parent)
-   {
+    if (NULL == http_parent)
+    {
       log_error(LOG_LEVEL_FATAL,
          "Invalid forward-override syntax in: %s", forward_override_line);
       /* Never get here - LOG_LEVEL_FATAL causes program exit */
-   }
+    }
 
-   /* Parse http forwarding settings */
-   if (strcmp(http_parent, ".") != 0)
-   {
+    /* Parse http forwarding settings */
+    if (strcmp(http_parent, ".") != 0)
+    {
       fwd->forward_port = 8000;
       parse_forwarder_address(http_parent,
          &fwd->forward_host, &fwd->forward_port);
-   }
+    }
 
-   assert (NULL != fwd);
+    assert (NULL != fwd);
 
-   log_error(LOG_LEVEL_CONNECT,
+    log_error(LOG_LEVEL_CONNECT,
       "Overriding forwarding settings based on \'%s\'", forward_override_line);
 
-   return fwd;
+    return fwd;
 }
 
-
-struct forward_ip_spec *get_forward_ip_settings(struct client_state *csp)
+static struct forward_spec *get_forward_rule_settings(struct client_state *csp, struct url_actions *url_action, int which)
 {
-    const char *forward_override_line = csp->action->string[ACTION_STRING_FORWARD_RESOLVED_IP];
+    const char *forward_override_line = url_action->action->string[which];
     char forward_settings[BUFFER_SIZE];
     char *http_parent = NULL;
     /* variable names were chosen for consistency reasons. */
-    struct forward_ip_spec *fwd = NULL;
+    struct forward_spec *fwd = NULL;
     int vec_count;
     char *vec[3];
 
@@ -2630,103 +2587,66 @@ struct forward_ip_spec *get_forward_ip_settings(struct client_state *csp)
     /* Create a copy ssplit can modify */
     strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
 
-    if (NULL != csp->fwd_ip)
+    if (NULL != csp->fwd && csp->fwd->should_unload)
     {
         /*
          * XXX: Currently necessary to prevent memory
          * leaks when the show-url-info cgi page is visited.
          */
-        unload_forward_ip_spec(csp->fwd_ip);
+        unload_forward_spec(csp->fwd);
     }
 
-    /*
-     * allocate a new forward node, valid only for
-     * the lifetime of this request. Save its location
-     * in csp as well, so sweep() can free it later on.
-     */
-    fwd = csp->fwd_ip = zalloc(sizeof(*fwd));
-    if (NULL == fwd)
+    vec_count = ssplit(forward_settings, "@@", vec, SZ(vec));
+    if (vec_count != 2)
     {
         log_error(LOG_LEVEL_FATAL,
-                  "can't allocate memory for forward-ip{%s}", forward_override_line);
-        /* Never get here - LOG_LEVEL_FATAL causes program exit */
+                  "Invalid forward-url syntax in: %s", forward_override_line);
         return NULL;
-    }
-
-    vec_count = ssplit(forward_settings, " \t", vec, SZ(vec));
-    if ((vec_count == 2) && !strcasecmp(vec[0], "forward"))
-    {
-        fwd->type = SOCKS_NONE;
-
-        /* Parse the parent HTTP proxy host:port */
-        http_parent = vec[1];
-
-    }
-    else if ((vec_count == 2) && !strcasecmp(vec[0], "forward-webserver"))
-    {
-        fwd->type = FORWARD_WEBSERVER;
-
-        /* Parse the parent HTTP server host:port */
-        http_parent = vec[1];
-
-    }
-    else if (vec_count == 3)
-    {
-        char *socks_proxy = NULL;
-
-        if  (!strcasecmp(vec[0], "forward-socks4"))
-        {
-            fwd->type = SOCKS_4;
-            socks_proxy = vec[1];
-        }
-        else if (!strcasecmp(vec[0], "forward-socks4a"))
-        {
-            fwd->type = SOCKS_4A;
-            socks_proxy = vec[1];
-        }
-        else if (!strcasecmp(vec[0], "forward-socks5"))
-        {
-            fwd->type = SOCKS_5;
-            socks_proxy = vec[1];
-        }
-        else if (!strcasecmp(vec[0], "forward-socks5t"))
-        {
-            fwd->type = SOCKS_5T;
-            socks_proxy = vec[1];
-        }
-
-        if (NULL != socks_proxy)
-        {
-            /* Parse the SOCKS proxy host[:port] */
-            fwd->gateway_port = 1080;
-            parse_forwarder_address(socks_proxy,
-                                    &fwd->gateway_host, &fwd->gateway_port);
-
-            http_parent = vec[2];
+    }else {
+        url_action->rule = forward_override_line;
+        if (!strcasecmp(vec[0], "PROXY")) {
+            return proxy_list;
+        }else if (!strcasecmp(vec[0], "BLOCK")) {
+            url_action->block = 1;
+            csp->action->flags |= (ACTION_BLOCK | ACTION_HANDLE_AS_EMPTY_DOCUMENT);
+            return NULL;
         }
     }
+    return NULL;
+}
 
-    if (NULL == http_parent)
+struct forward_spec *get_forward_rule_settings_by_action(struct url_actions *url_action, int which)
+{
+    const char *forward_override_line = url_action->action->string[which];
+    char forward_settings[BUFFER_SIZE];
+    char *http_parent = NULL;
+    /* variable names were chosen for consistency reasons. */
+    struct forward_spec *fwd = NULL;
+    int vec_count;
+    char *vec[3];
+
+    /* Should be enforced by load_one_actions_file() */
+    assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
+
+    /* Create a copy ssplit can modify */
+    strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
+
+    vec_count = ssplit(forward_settings, "@@", vec, SZ(vec));
+    if (vec_count != 2)
     {
         log_error(LOG_LEVEL_FATAL,
-                  "Invalid forward-override syntax in: %s", forward_override_line);
-        /* Never get here - LOG_LEVEL_FATAL causes program exit */
+                  "Invalid forward-url syntax in: %s", forward_override_line);
+        return NULL;
+    }else {
+        url_action->rule = forward_override_line;
+        if (!strcasecmp(vec[0], "PROXY")) {
+            return proxy_list;
+        }else if (!strcasecmp(vec[0], "BLOCK")) {
+            url_action->block = 1;
+            return NULL;
+        }
     }
-
-    /* Parse http forwarding settings */
-    if (strcmp(http_parent, ".") != 0)
-    {
-        fwd->forward_port = 8000;
-        parse_forwarder_address(http_parent,
-                                &fwd->forward_host, &fwd->forward_port);
-    }
-    
-    assert (NULL != fwd);
-    
-    log_error(LOG_LEVEL_CONNECT,
-              "Overriding forwarding settings based on \'%s\'", forward_override_line);
-    
-    return fwd;
+    return NULL;
 }
 
 /*********************************************************************
@@ -2745,32 +2665,69 @@ struct forward_ip_spec *get_forward_ip_settings(struct client_state *csp)
 struct forward_spec *forward_url(struct client_state *csp,
                                        const struct http_request *http)
 {
-    static struct forward_spec fwd_default[1]; /* Zero'ed due to being static. */
-
     fwd_default->is_default = 1;
+    struct forward_spec *fwd = csp->config->forward;
 
-   struct forward_spec *fwd = csp->config->forward;
+    if (csp->action->flags & ACTION_FORWARD_OVERRIDE)
+    {
+        return get_forward_override_settings(csp);
+    }
 
-   if (csp->action->flags & ACTION_FORWARD_OVERRIDE)
-   {
-      return get_forward_override_settings(csp);
-   }
+    while (fwd != NULL)
+    {
+        if (url_match(fwd->url, http))
+        {
+            return fwd;
+        }
+        fwd = fwd->next;
+    }
 
-   if (fwd == NULL)
-   {
-      return fwd_default;
-   }
+    if (fwd != NULL) {
+        return fwd;
+    }
 
-   while (fwd != NULL)
-   {
-      if (url_match(fwd->url, http))
-      {
-         return fwd;
-      }
-      fwd = fwd->next;
-   }
+    struct url_actions *action = po_url_rules;
+    while (action != NULL) {
+        if (url_match(action->url, http))
+        {
+            csp->rule = action;
+            fwd = get_forward_rule_settings(csp, action, ACTION_STRING_FORWARD_RULE);
+            break;
+        }
+        action = action->next;
+    }
 
-   return fwd_default;
+    if (fwd != NULL) {
+        return fwd;
+    }
+
+    return fwd_default;
+}
+
+
+struct forward_ip_spec *forward_ip(struct client_state *csp, struct sockaddr_storage addr)
+{
+    struct forward_ip_spec *fwd = NULL;
+
+    if (addr.ss_family != AF_INET)
+    {
+        /* Should never happen */
+        return NULL;
+    }
+
+    struct sockaddr_in *sin = (struct sockaddr_in *)&addr;
+
+    struct url_actions *action = po_ip_rules;
+    while (action != NULL) {
+        if (action->tree && radix32tree_find(action->tree, ntohl(sin->sin_addr.s_addr)) != RADIX_NO_VALUE) {
+            csp->rule = action;
+            fwd = get_forward_rule_settings(csp, action, ACTION_STRING_FORWARD_RESOLVED_IP);
+            break;
+        }
+        action = action->next;
+    }
+
+    return fwd;
 }
 
 

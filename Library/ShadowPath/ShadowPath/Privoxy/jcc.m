@@ -128,6 +128,8 @@ static int max_log_clients_count = 50;
 static int log_clients_count = 0;
 struct file_list     files[1];
 
+struct forward_spec *proxy_list = NULL;
+
 #ifdef FEATURE_STATISTICS
 int urls_read     = 0;     /* total nr of urls read inc rejected */
 int urls_rejected = 0;     /* total nr of urls rejected */
@@ -1802,9 +1804,7 @@ static void chat(struct client_state *csp)
       /* Never get here - LOG_LEVEL_FATAL causes program exit */
       return;
    }
-    csp->fwd = fwd;
-
-
+   csp->fwd = fwd;
 
    /*
     * build the http request to send to the server
@@ -2760,11 +2760,11 @@ static void prepare_csp_for_next_request(struct client_state *csp)
    destroy_list(csp->headers);
    destroy_list(csp->tags);
    free_current_action(csp->action);
-//   if (NULL != csp->fwd && !csp->fwd->is_default)
-//   {
-//      unload_forward_spec(csp->fwd);
-//   }
-    csp->fwd = NULL;
+   if (NULL != csp->fwd && csp->fwd->should_unload)
+   {
+      unload_forward_spec(csp->fwd);
+   }
+   csp->fwd = NULL;
    /* XXX: Store per-connection flags someplace else. */
    csp->flags = (CSP_FLAG_ACTIVE | CSP_FLAG_REUSED_CLIENT_CONNECTION);
    if (toggled_on_flag_set)
@@ -3190,9 +3190,11 @@ static void initialize_mutexes(void)
  *                "File", "Exit" menu option.
  *
  *********************************************************************/
-int shadowpath_main(char *conf_path, shadowpath_cb cb, void *data)
+int shadowpath_main(char *conf_path, struct forward_spec *forward_proxy_list, shadowpath_cb cb, void *data)
 {
     unsigned int random_seed;
+
+    proxy_list = forward_proxy_list;
 
     configfile = conf_path;
 
