@@ -32,7 +32,7 @@ class UIManager: NSObject, AppLifeCycleProtocol {
 
         keyWindow?.rootViewController = makeRootViewController()
 
-        Receipt.shared.validate()
+//        Receipt.shared.validate()
         return true
     }
     
